@@ -1,0 +1,245 @@
+---
+title: "Movie Data Analysis"
+author: "Marielle Jurist"
+date: "2/8/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+df = read.csv("cleaned_movie_data.csv",header=T,as.is=c(1:126))
+
+#set all NAs to zero for convenience
+df[is.na(df)] <- 0
+names(df)
+
+```
+
+
+
+#K means Clustering#
+```{r}
+set.seed(100)
+
+#get genre and keywords columns
+tdm =df[,101:126]
+head(tdm)
+
+#accumulator for cost results
+cost_df = data.frame()
+
+#run kmeans on term-document matrix created from python for all clusters up to 20
+for(i in 2:15){
+  #Run kmeans for each level of i, allowing up to 100 iterations for convergence
+  kmeans= kmeans(x=tdm, centers=i, iter.max=30, nstart=50)
+  
+  #Combine cluster number and cost () together, write to df
+  cost_df= rbind(cost_df, cbind(i, kmeans$tot.withinss))
+  
+}
+names(cost_df) = c("cluster", "cost")
+
+#plot clusters vs cost
+#goal is to minimize cost = total sum of squares within each cluster
+plot(cost_df$"cluster", cost_df$"cost", xlab = "number of K clusters", ylab="Total within-clusters sum of squares")
+```
+
+based on the elbow method choose 9 as cluster K (after 9 the rate of decrease in cost or the slope of the line decreases, this avoids over fitting data). 
+```{r}
+library(cluster)
+library(factoextra)
+kmeans9 = kmeans(x=tdm, centers=9, iter.max=30, nstart=50)
+cluster = kmeans9$cluster
+tdm = as.data.frame(cbind(tdm,cluster))
+df = cbind(df,cluster)
+fviz_cluster(kmeans9, geom = "point", data = tdm) + ggtitle("k = 9")
+```
+```{r}
+##explore cluster movie titles
+for(j in 1:9){
+  print(j)
+  print(head(subset(df, df$cluster==j)$"movie_title",n=10))
+}
+
+
+#check sizes of each cluster
+hist(tdm$cluster,col="blue",ylab="size of cluster",xlab = "cluster")
+```
+###Exploring contents of cluster###
+```{r}
+library(RColorBrewer)
+library(plotly)
+
+genrecounts = matrix(nrow= 9,ncol=26)
+
+for(k in 1:9){
+  for(a in 1:26){
+   genrecounts[k,a]=sum(subset(tdm, tdm$cluster==k)[,a])
+  }
+}
+
+
+
+genrecounts_df = as.data.frame(genrecounts)
+names(genrecounts_df) = names(tdm)[1:26]
+
+
+plot_ly(genrecounts_df, x = c(1:9), y = ~Music, type = 'bar', name = 'Music') %>%
+  add_trace(y = ~Film.Noir, name = 'Film Noir') %>%
+  add_trace(y = ~Adventure, name = 'Adventure') %>%
+  add_trace(y = ~Horror, name = 'Horror') %>%
+  add_trace(y = ~Biography, name = 'Biography') %>%
+  add_trace(y = ~Family, name = 'Family') %>%
+  add_trace(y = ~Thriller, name = 'Thriller') %>%
+  add_trace(y = ~Game.Show, name = 'Game.Show') %>%
+  add_trace(y = ~Comedy, name = 'Comedy') %>%
+  add_trace(y = ~Mystery, name = 'Mystery') %>%
+  add_trace(y = ~Fantasy, name = 'Fantasy') %>%
+  add_trace(y = ~Musical, name = 'Musical') %>%
+  add_trace(y = ~Animation, name = 'Animation') %>%
+  add_trace(y = ~Action, name = 'Action') %>%
+  add_trace(y = ~News, name = 'News') %>%
+  add_trace(y = ~Crime, name = 'Crime') %>%
+  add_trace(y = ~Sci.Fi, name = 'Sci.Fi') %>%
+  add_trace(y = ~Reality.TV, name = 'Reality.TV') %>%
+  add_trace(y = ~Documentary, name = 'Documentary') %>%
+  add_trace(y = ~Romance, name = 'Romance') %>%
+  add_trace(y = ~Sport, name = 'Sport') %>%
+  add_trace(y = ~War, name = 'War') %>%
+  add_trace(y = ~Drama, name = 'Drama') %>%
+  add_trace(y = ~Short, name = 'Short') %>%
+  add_trace(y = ~Western, name = 'Western') %>%
+  layout(yaxis = list(title = 'Count of Movie titles'), barmode = 'stack')
+
+
+
+```
+
+cluster boxplots- gross, budget,revenue, rating
+```{r}
+revenue = df$gross-df$budget
+cbind(df,revenue)
+plot_ly(df, y = ~gross, x=~cluster, type = "box")
+plot_ly(df, y = ~budget, x=~cluster, type = "box")
+plot_ly(df, y = ~revenue, x=~cluster, type = "box")
+plot_ly(df, y = ~imdb_score, x=~cluster, type = "box")
+
+```
+cluster one, which is dominated by dramas has the highest median imdb score, but the most outliers with extremely low ratings. It also has more outliers in budget (suggest heavier right tail in distribution).
+clutser 4 has lowest median revenue in the negative millions. It tends to be movies tagged as thriller/action/crime i.e. the dark knight, fast and the furious.
+cluster 2 (animated movies, and fantasy types) and cluster 3(super hero and action) have the highest gross income at the box office. With high budgets howver, their revenue ends of being small.
+Cluster 8 (horror) has lower budgets and thus high revenues.
+
+exericse: extract outliers from boxplots and try to identify similarities
+
+next steps- adding genre cluster as variable to models and evaluate importance
+
+
+##Lasso##
+Fits data where p is large, shrinks coefficients to zero based on alpha 1 penalty
+Picks linear model based on RSS
+
+```{r}
+#Randomly shuffle the data
+shuffledData<-df[sample(nrow(df)),]
+
+#Create 10 equally size folds for cross validation
+folds <- cut(seq(1,nrow(shuffledData)),breaks=5,labels=FALSE)
+
+#predict revenue (gross-budget) from num_critics_for_reviews, num_voted_users, cast_total_facebook_likes, _facenumber_in_poster, num_user_for_reviews, titel_year, imdb_score, movie_facebook_likes, all the parsed fields from plot_keywords, and cluster (from the kMeans exercise)
+#chose predicitors from the more intersting fields. Looked for continuous variables over categorical variables in order to avoid errors when getting family = "gaussian" predictions
+A = shuffledData[,c(4,14,15,17,20,25,27,29,30:100,127)]
+X= as.matrix(A)
+Y = as.vector(shuffledData$gross -shuffledData$budget)
+
+#create grid for choosing optimal lambda value
+grid = 10^seq(10,-2,length = 100)
+
+#empty array to store cv error
+cv.error = rep(0,5)
+
+#Perform 5 fold cross validation
+for(i in 1:5){
+  #Segement your data by fold using the which() function 
+  testIndexes <- which(folds==i,arr.ind=TRUE)
+  Xtest <- X[testIndexes, ]
+  Ytest <- Y[testIndexes]
+  Xtrain <- X[-testIndexes, ]
+  Ytrain <- Y[-testIndexes]
+  
+  #lasso.mod = glmnet(X,Y,alpha = 1, lambda =grid, family = "gaussian")
+  cv.out=cv.glmnet(Xtrain,Ytrain,alpha=1,lambda=grid)
+  bestlam=cv.out$lambda.min
+  
+  lasso.mod=glmnet(Xtrain,Ytrain,alpha=1,lambda=bestlam)
+  #coef(lasso.mod)
+  pred.lasso = predict.cv.glmnet(cv.out,s = bestlam, newx = Xtest)
+  
+  #get mean squared error from residuals
+  cv.error[i] = mean((pred.lasso-Ytest)^2)
+}
+
+cv.error
+mean_error = mean(cv.error)
+mean_error
+mean_error/mean(revenue)
+lasso.coef = coef(lasso.mod,s=bestlam)
+lasso.coef
+```
+After running lasso, all other prediciotr slected for model are shrunk to zero (or close to zero). The one key variable for prediciting movie revenue is number voted users on imdb. This model leads to corss validated error of  3.925875e+16 (not good). Standardized mean square error is around 9 billion. This is a bad variable to predict, based on the box plots above. Try again with imdb_score as predicted value
+
+```{r}
+library(boot)
+library(glmnet)
+set.seed(1)
+
+#Randomly shuffle the data
+shuffledData<-df[sample(nrow(df)),]
+
+#Create 10 equally size folds for cross validation
+folds <- cut(seq(1,nrow(shuffledData)),breaks=5,labels=FALSE)
+
+#predict imdb score from num_critics_for_reviews, gross, num_voted_users, cast_total_facebook_likes, _facenumber_in_poster, num_user_for_reviews, budget, title_year, imdb_score, movie_facebook_likes, all the parsed fields from plot_keywords, and cluster (from the kMeans exercise)
+#chose predicitors from the more intersting fields. Looked for continuous variables over categorical variables in order to avoid errors when getting family = "gaussian" predictions
+A = shuffledData[,c(4,10,14,15,17,20,24,25,29,30:100,127)]
+X= as.matrix(A)
+Y = as.vector(shuffledData$imdb_score)
+
+#create grid for choosing optimal lambda value
+grid = 10^seq(10,-2,length = 100)
+
+#empty array to store cv error
+cv.error = rep(0,5)
+
+#Perform 5 fold cross validation
+for(i in 1:5){
+  #Segement your data by fold using the which() function 
+  testIndexes <- which(folds==i,arr.ind=TRUE)
+  Xtest <- X[testIndexes, ]
+  Ytest <- Y[testIndexes]
+  Xtrain <- X[-testIndexes, ]
+  Ytrain <- Y[-testIndexes]
+  
+  #lasso.mod = glmnet(X,Y,alpha = 1, lambda =grid, family = "gaussian")
+  cv.out=cv.glmnet(Xtrain,Ytrain,alpha=1,lambda=grid)
+  bestlam=cv.out$lambda.min
+  
+  lasso.mod=glmnet(Xtrain,Ytrain,alpha=1,lambda=bestlam)
+  #coef(lasso.mod)
+  pred.lasso = predict.cv.glmnet(cv.out,s = bestlam, newx = Xtest)
+  
+  #get mean squared error from residuals
+  cv.error[i] = mean((pred.lasso-Ytest)^2)
+}
+
+cv.error
+mean_error = mean(cv.error)
+mean_error
+lasso.coef = coef(lasso.mod,s=bestlam)
+lasso.coef
+sort(lasso.coef,decreassing =T)
+```
+cross validated error is 0.953. Some variables with heavier weights in model: "alien", "blood", "teenager", "town", "war", "scientist", "money", "female". "girl", "box", "love". Cluster is significant as well
